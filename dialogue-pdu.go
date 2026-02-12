@@ -434,7 +434,7 @@ func (d *DialoguePDU) UnmarshalBinary(b []byte) error {
 
 func (d *DialoguePDU) parseAARQFromBytes(b []byte) error {
 	var err error
-	var offset = 2
+	var offset = 0
 	d.ProtocolVersion, err = ParseIE(b[offset:])
 	if err != nil {
 		return err
@@ -461,7 +461,7 @@ func (d *DialoguePDU) parseAARQFromBytes(b []byte) error {
 
 func (d *DialoguePDU) parseAAREFromBytes(b []byte) error {
 	var err error
-	var offset = 2
+	var offset = 0
 	d.ProtocolVersion, err = ParseIE(b[offset:])
 	if err != nil {
 		return err
@@ -500,7 +500,7 @@ func (d *DialoguePDU) parseAAREFromBytes(b []byte) error {
 
 func (d *DialoguePDU) parseABRTFromBytes(b []byte) error {
 	var err error
-	var offset = 2
+	var offset = 0
 	d.AbortSource, err = ParseIE(b[offset:])
 	if err != nil {
 		return err
