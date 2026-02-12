@@ -8,8 +8,8 @@ import (
 	"encoding"
 	"testing"
 
+	"github.com/en-vee/go-tcap"
 	"github.com/pascaldekloe/goe/verify"
-	"github.com/wmnsk/go-tcap"
 )
 
 type serializable interface {
