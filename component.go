@@ -380,28 +380,27 @@ func (c *Components) UnmarshalBinary(b []byte) error {
 
 	c.Tag = Tag(b[0])
 
-	// 1. Use your util to get the dynamic length of the Components container
-	length, err := UnmarshalAsn1ElementLength(b)
+	// 1. Use the util to get the dynamic length of the Components container
+	// AND the number of bytes used to encode that length.
+	valLen, lenByteCount, err := UnmarshalAsn1ElementLength(b)
 	if err != nil {
 		return err
 	}
-	c.Length = length
+	c.Length = valLen
 
-	// 2. Calculate header length of the Components tag (0x6B)
-	headerLen := 2
-	if b[1] > 0x7f {
-		headerLen = 2 + int(b[1]&0x7f)
-	}
+	// 2. Calculate header length: 1 (Tag) + size of the length field
+	headerLen := 1 + lenByteCount
 
 	// 3. Slice the buffer to only include the actual components data
-	if len(b) < headerLen+length {
+	if len(b) < headerLen+valLen {
 		return io.ErrUnexpectedEOF
 	}
-	data := b[headerLen : headerLen+length]
+	data := b[headerLen : headerLen+valLen]
 
 	// 4. Iterate through the data to parse individual components
 	for len(data) > 0 {
 		// Parse the individual component (Invoke, ReturnResult, etc.)
+		// ParseComponent internally calls UnmarshalBinary for a single Component.
 		comp, err := ParseComponent(data)
 		if err != nil {
 			return err
@@ -409,10 +408,11 @@ func (c *Components) UnmarshalBinary(b []byte) error {
 		c.Component = append(c.Component, comp)
 
 		// 5. Move the pointer forward by the actual size of the component
-		// MarshalLen() is now dynamic, so it returns the full Tag + Length + Value size
+		// Since we updated MarshalLen() and UnmarshalBinary() in Component,
+		// compFullSize will now accurately reflect the dynamic ASN.1 header.
 		compFullSize := comp.MarshalLen()
 		if len(data) < compFullSize {
-			break // Should not happen if Lengths are consistent
+			break
 		}
 		data = data[compFullSize:]
 	}
@@ -437,23 +437,20 @@ func (c *Component) UnmarshalBinary(b []byte) error {
 
 	c.Type = Tag(b[0])
 
-	// 1. Use your util to get the dynamic length
-	length, err := UnmarshalAsn1ElementLength(b)
+	// 1. Use the util to get value length AND number of length bytes
+	valLen, lenByteCount, err := UnmarshalAsn1ElementLength(b)
 	if err != nil {
 		return err
 	}
-	c.Length = length
+	c.Length = valLen
 
-	// 2. Calculate header length (Tag + variable Length bytes)
-	headerLen := 2
-	if b[1] > 0x7f {
-		headerLen = 2 + int(b[1]&0x7f)
-	}
+	// 2. headerLen is Tag (1) + size of the length field
+	headerLen := 1 + lenByteCount
 
 	// 3. Set initial offset after the Component header
 	var offset = headerLen
 
-	// Ensure we don't read past the buffer
+	// Ensure we have enough buffer to start reading the first IE
 	if len(b) < offset {
 		return io.ErrUnexpectedEOF
 	}
@@ -475,7 +472,8 @@ func (c *Component) UnmarshalBinary(b []byte) error {
 		offset += c.OperationCode.MarshalLen()
 
 		// Parse Parameter (The actual CAMEL data)
-		if offset < len(b) && offset < headerLen+length {
+		// Ensure we stay within the boundaries of this specific component
+		if offset < len(b) && offset < headerLen+valLen {
 			c.Parameter, err = ParseIERecursive(b[offset:])
 			if err != nil {
 				return err
@@ -483,7 +481,6 @@ func (c *Component) UnmarshalBinary(b []byte) error {
 		}
 
 	case ReturnResultLast, ReturnResultNotLast:
-		// Note: ReturnResult has an optional sequence wrapper (ResultRetres)
 		c.ResultRetres, err = ParseIE(b[offset:])
 		if err != nil {
 			return err
@@ -515,7 +512,7 @@ func (c *Component) UnmarshalBinary(b []byte) error {
 		}
 		offset += c.ErrorCode.MarshalLen()
 
-		if offset < len(b) && offset < headerLen+length {
+		if offset < len(b) && offset < headerLen+valLen {
 			c.Parameter, err = ParseIERecursive(b[offset:])
 			if err != nil {
 				return err

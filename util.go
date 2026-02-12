@@ -2,30 +2,38 @@ package tcap
 
 import "fmt"
 
-func UnmarshalAsn1ElementLength(b []byte) (int, error) {
-	// Check the first byte of the length field
-	if b[1] <= 0x7f {
-		// Short Form: Length is exactly the value of the byte
-		return int(b[1]), nil
+// UnmarshalAsn1ElementLength returns the actual length and the number of bytes
+// occupied by the length field itself (including the header byte).
+func UnmarshalAsn1ElementLength(b []byte) (int, int, error) {
+	if len(b) < 2 {
+		return 0, 0, fmt.Errorf("buffer too short to read length")
 	}
 
-	// Long Form: Bits 7-1 tell us how many bytes follow
+	// 1. Short Form: bit 8 is 0. Length is 0-127.
+	if b[1] <= 0x7f {
+		return int(b[1]), 1, nil
+	}
+
+	// 2. Long Form: bits 7-1 of the first byte tell us how many bytes follow.
 	numOctets := int(b[1] & 0x7f)
 
 	if numOctets == 0 {
-		return -1, fmt.Errorf("indefinite length not supported")
-	}
-	if len(b) < 2+numOctets {
-		return -1, fmt.Errorf("buffer too short for long-form length")
+		// 0x80 is Indefinite Length (not supported here)
+		return -1, 0, fmt.Errorf("indefinite length not supported")
 	}
 
-	// Accumulate the length from subsequent bytes
+	if len(b) < 2+numOctets {
+		return -1, 0, fmt.Errorf("buffer too short for long-form length")
+	}
+
+	// 3. Accumulate the length from subsequent bytes
 	var actualLength uint32
 	for i := 0; i < numOctets; i++ {
 		actualLength = (actualLength << 8) | uint32(b[2+i])
 	}
 
-	return int(actualLength), nil
+	// Return the actual value length and total bytes used (header byte + octets)
+	return int(actualLength), 1 + numOctets, nil
 }
 
 // MarshalAsn1ElementLength encodes an integer length into ASN.1 BER format.

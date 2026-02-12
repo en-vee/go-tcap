@@ -141,14 +141,14 @@ func (d *Dialogue) UnmarshalBinary(b []byte) error {
 
 	d.Tag = Tag(b[0])
 	var err error
-
-	if d.Length, err = UnmarshalAsn1ElementLength(b); err != nil {
+	lLength := 0
+	if d.Length, lLength, err = UnmarshalAsn1ElementLength(b); err != nil {
 		return err
 	}
-	d.ExternalTag = Tag(b[2])
-	d.ExternalLength = int(b[3])
+	d.ExternalTag = Tag(b[1+lLength])
+	d.ExternalLength = int(b[2+lLength])
 
-	var offset = 4
+	var offset = 3 + lLength
 	d.ObjectIdentifier, err = ParseIE(b[offset:])
 	if err != nil {
 		return err

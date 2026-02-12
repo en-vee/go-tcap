@@ -233,45 +233,45 @@ func (t *Transaction) UnmarshalBinary(b []byte) error {
 	var err error
 
 	t.Type = Tag(b[0])
-
-	if t.Length, err = UnmarshalAsn1ElementLength(b); err != nil {
+	lLength := 0
+	if t.Length, lLength, err = UnmarshalAsn1ElementLength(b); err != nil {
 		return err
 	}
 
-	var offset = 2
+	var offset = 1 + lLength
 	switch t.Type.Code() {
 	case Unidirectional:
 		break
 	case Begin:
-		t.OrigTransactionID, err = ParseIE(b[offset : offset+6])
+		t.OrigTransactionID, err = ParseIE(b[offset:])
 		if err != nil {
 			return err
 		}
 		offset += t.OrigTransactionID.MarshalLen()
 	case End:
-		t.DestTransactionID, err = ParseIE(b[offset : offset+6])
+		t.DestTransactionID, err = ParseIE(b[offset:])
 		if err != nil {
 			return err
 		}
 		offset += t.DestTransactionID.MarshalLen()
 	case Continue:
-		t.OrigTransactionID, err = ParseIE(b[offset : offset+6])
+		t.OrigTransactionID, err = ParseIE(b[offset:])
 		if err != nil {
 			return err
 		}
 		offset += t.OrigTransactionID.MarshalLen()
-		t.DestTransactionID, err = ParseIE(b[offset : offset+6])
+		t.DestTransactionID, err = ParseIE(b[offset:])
 		if err != nil {
 			return err
 		}
 		offset += t.DestTransactionID.MarshalLen()
 	case Abort:
-		t.DestTransactionID, err = ParseIE(b[offset : offset+6])
+		t.DestTransactionID, err = ParseIE(b[offset:])
 		if err != nil {
 			return err
 		}
 		offset += t.DestTransactionID.MarshalLen()
-		t.PAbortCause, err = ParseIE(b[offset : offset+3])
+		t.PAbortCause, err = ParseIE(b[offset:])
 		if err != nil {
 			return err
 		}

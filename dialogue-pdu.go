@@ -402,27 +402,23 @@ func (d *DialoguePDU) UnmarshalBinary(b []byte) error {
 
 	d.Type = Tag(b[0])
 
-	// 1. Use your util to get the actual value length
-	length, err := UnmarshalAsn1ElementLength(b)
+	// 1. Use the util to get the content length and the size of the length field itself
+	valLen, lenByteCount, err := UnmarshalAsn1ElementLength(b)
 	if err != nil {
 		return err
 	}
-	d.Length = length
+	d.Length = valLen
 
-	// 2. Calculate header length to find the data offset
-	// If b[1] > 0x7f, it's 2 + number of octets. Otherwise, it's 2.
-	headerLen := 2
-	if b[1] > 0x7f {
-		headerLen = 2 + int(b[1]&0x7f)
-	}
+	// 2. Calculate headerLen: 1 (Tag) + lenByteCount (Length field size)
+	headerLen := 1 + lenByteCount
 
-	// 3. Bound check the full message
-	if len(b) < headerLen+length {
+	// 3. Bound check: ensure the buffer is long enough for the header + the data
+	if len(b) < headerLen+valLen {
 		return io.ErrUnexpectedEOF
 	}
 
-	// 4. Extract the payload and parse
-	payload := b[headerLen : headerLen+length]
+	// 4. Extract only the value (payload) using the dynamic headerLen
+	payload := b[headerLen : headerLen+valLen]
 
 	switch d.Type.Code() {
 	case AARQ:

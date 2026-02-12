@@ -175,13 +175,14 @@ func (i *IE) UnmarshalBinary(b []byte) error {
 
 	var err error
 	i.Tag = Tag(b[0])
-	if i.Length, err = UnmarshalAsn1ElementLength(b); err != nil {
+	lLength := 0
+	if i.Length, lLength, err = UnmarshalAsn1ElementLength(b); err != nil {
 		return err
 	}
-	if l < 2+int(i.Length) {
-		return io.ErrUnexpectedEOF
-	}
-	i.Value = b[2 : 2+int(i.Length)]
+	// if l < 2+int(i.Length) {
+	// 	return io.ErrUnexpectedEOF
+	// }
+	i.Value = b[1+lLength : 1+lLength+i.Length]
 	return nil
 }
 
@@ -240,14 +241,15 @@ func (i *IE) ParseRecursive(b []byte) error {
 		return io.ErrUnexpectedEOF
 	}
 	var err error
+	lLength := 0
 	i.Tag = Tag(b[0])
-	if i.Length, err = UnmarshalAsn1ElementLength(b); err != nil {
+	if i.Length, lLength, err = UnmarshalAsn1ElementLength(b); err != nil {
 		return err
 	}
-	if int(i.Length)+2 > len(b) {
-		return nil
-	}
-	i.Value = b[2 : 2+int(i.Length)]
+	// if int(i.Length)+2 > len(b) {
+	// 	return nil
+	// }
+	i.Value = b[1+lLength : 1+lLength+i.Length]
 
 	if i.Tag.Form() == 1 {
 		x, err := ParseAsBER(i.Value)
