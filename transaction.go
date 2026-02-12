@@ -7,6 +7,7 @@ package tcap
 import (
 	"encoding/binary"
 	"fmt"
+	"io"
 )
 
 // Message Type definitions.
@@ -32,7 +33,7 @@ const (
 // Transaction represents a Transaction Portion of TCAP.
 type Transaction struct {
 	Type              Tag
-	Length            uint8
+	Length            int
 	OrigTransactionID *IE
 	DestTransactionID *IE
 	PAbortCause       *IE
@@ -148,8 +149,20 @@ func (t *Transaction) MarshalBinary() ([]byte, error) {
 
 // MarshalTo puts the byte sequence in the byte array given as b.
 func (t *Transaction) MarshalTo(b []byte) error {
+	// 1. Calculate the length header bytes (e.g., [0x32] or [0x81, 0xB1])
+	lenBytes := MarshalAsn1ElementLength(t.Length)
+
+	// 2. Ensure the provided buffer can fit Tag (1) + Length Header + Value
+	totalNeeded := 1 + len(lenBytes) + t.MarshalLen()
+	if len(b) < totalNeeded {
+		return io.ErrShortBuffer
+	}
+
+	// 3. Set the Tag
 	b[0] = uint8(t.Type)
-	b[1] = t.Length
+
+	// 4. Copy the Length Header starting at index 1
+	copy(b[1:], lenBytes)
 
 	var offset = 2
 	switch t.Type.Code() {
@@ -213,10 +226,18 @@ func ParseTransaction(b []byte) (*Transaction, error) {
 
 // UnmarshalBinary sets the values retrieved from byte sequence in an Transaction.
 func (t *Transaction) UnmarshalBinary(b []byte) error {
-	t.Type = Tag(b[0])
-	t.Length = b[1]
+	if len(b) < 2 {
+		return fmt.Errorf("buffer too short")
+	}
 
 	var err error
+
+	t.Type = Tag(b[0])
+
+	if t.Length, err = UnmarshalAsn1ElementLength(b); err != nil {
+		return err
+	}
+
 	var offset = 2
 	switch t.Type.Code() {
 	case Unidirectional:
@@ -320,7 +341,7 @@ func (t *Transaction) SetLength() {
 	if field := t.PAbortCause; field != nil {
 		field.SetLength()
 	}
-	t.Length = uint8(t.MarshalLen() - 2)
+	t.Length = t.MarshalLen() - 2
 }
 
 // MessageTypeString returns the name of Message Type in string.

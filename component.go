@@ -68,14 +68,14 @@ const (
 // This is a TCAP Components' Header part. Contents are in Component field.
 type Components struct {
 	Tag       Tag
-	Length    uint8
+	Length    int
 	Component []*Component
 }
 
 // Component represents a TCAP Component.
 type Component struct {
 	Type          Tag
-	Length        uint8
+	Length        int
 	InvokeID      *IE
 	LinkedID      *IE
 	ResultRetres  *IE
@@ -234,12 +234,29 @@ func (c *Components) MarshalBinary() ([]byte, error) {
 
 // MarshalTo puts the byte sequence in the byte array given as b.
 func (c *Components) MarshalTo(b []byte) error {
-	b[0] = uint8(c.Tag)
-	b[1] = c.Length
+	// 1. Calculate dynamic length bytes using your util
+	lenBytes := MarshalAsn1ElementLength(c.Length)
 
-	cursor := 2
+	// 2. Ensure buffer can fit Tag (1) + Length Header
+	if len(b) < 1+len(lenBytes) {
+		return io.ErrShortBuffer
+	}
+
+	// 3. Set the Tag and the dynamic Length header
+	b[0] = uint8(c.Tag)
+	copy(b[1:], lenBytes)
+
+	// 4. Calculate where components start (1 + length of length header)
+	cursor := 1 + len(lenBytes)
+
+	// 5. Marshal each individual component
 	for _, comp := range c.Component {
 		compLen := comp.MarshalLen()
+		// Boundary check for safety
+		if cursor+compLen > len(b) {
+			return io.ErrShortBuffer
+		}
+
 		if err := comp.MarshalTo(b[cursor : cursor+compLen]); err != nil {
 			return err
 		}
@@ -259,10 +276,22 @@ func (c *Component) MarshalBinary() ([]byte, error) {
 
 // MarshalTo puts the byte sequence in the byte array given as b.
 func (c *Component) MarshalTo(b []byte) error {
-	b[0] = uint8(c.Type)
-	b[1] = c.Length
+	// 1. Calculate dynamic length bytes
+	lenBytes := MarshalAsn1ElementLength(c.Length)
 
-	var offset = 2
+	// 2. Initial boundary check: Tag(1) + LenHeader
+	if len(b) < 1+len(lenBytes) {
+		return io.ErrShortBuffer
+	}
+
+	// 3. Set the Tag and dynamic Length bytes
+	b[0] = uint8(c.Type)
+	copy(b[1:], lenBytes)
+
+	// 4. Set the offset based on the size of the length header
+	offset := 1 + len(lenBytes)
+
+	// 5. Marshal Sub-fields (InvokeID, OperationCode, etc.)
 	if field := c.InvokeID; field != nil {
 		if err := field.MarshalTo(b[offset : offset+field.MarshalLen()]); err != nil {
 			return err
@@ -350,25 +379,44 @@ func (c *Components) UnmarshalBinary(b []byte) error {
 	}
 
 	c.Tag = Tag(b[0])
-	c.Length = b[1]
 
-	var offset = 2
-	for {
-		if len(b) < 2 {
-			break
-		}
+	// 1. Use your util to get the dynamic length of the Components container
+	length, err := UnmarshalAsn1ElementLength(b)
+	if err != nil {
+		return err
+	}
+	c.Length = length
 
-		comp, err := ParseComponent(b[offset:])
+	// 2. Calculate header length of the Components tag (0x6B)
+	headerLen := 2
+	if b[1] > 0x7f {
+		headerLen = 2 + int(b[1]&0x7f)
+	}
+
+	// 3. Slice the buffer to only include the actual components data
+	if len(b) < headerLen+length {
+		return io.ErrUnexpectedEOF
+	}
+	data := b[headerLen : headerLen+length]
+
+	// 4. Iterate through the data to parse individual components
+	for len(data) > 0 {
+		// Parse the individual component (Invoke, ReturnResult, etc.)
+		comp, err := ParseComponent(data)
 		if err != nil {
 			return err
 		}
 		c.Component = append(c.Component, comp)
 
-		if len(b[offset:]) == int(comp.Length)+2 {
-			break
+		// 5. Move the pointer forward by the actual size of the component
+		// MarshalLen() is now dynamic, so it returns the full Tag + Length + Value size
+		compFullSize := comp.MarshalLen()
+		if len(data) < compFullSize {
+			break // Should not happen if Lengths are consistent
 		}
-		b = b[offset+comp.MarshalLen()-2:]
+		data = data[compFullSize:]
 	}
+
 	return nil
 }
 
@@ -386,11 +434,31 @@ func (c *Component) UnmarshalBinary(b []byte) error {
 	if len(b) < 2 {
 		return io.ErrUnexpectedEOF
 	}
-	c.Type = Tag(b[0])
-	c.Length = b[1]
 
-	var err error
-	var offset = 2
+	c.Type = Tag(b[0])
+
+	// 1. Use your util to get the dynamic length
+	length, err := UnmarshalAsn1ElementLength(b)
+	if err != nil {
+		return err
+	}
+	c.Length = length
+
+	// 2. Calculate header length (Tag + variable Length bytes)
+	headerLen := 2
+	if b[1] > 0x7f {
+		headerLen = 2 + int(b[1]&0x7f)
+	}
+
+	// 3. Set initial offset after the Component header
+	var offset = headerLen
+
+	// Ensure we don't read past the buffer
+	if len(b) < offset {
+		return io.ErrUnexpectedEOF
+	}
+
+	// 4. Parse Invoke ID (Common to almost all components)
 	c.InvokeID, err = ParseIE(b[offset:])
 	if err != nil {
 		return err
@@ -399,47 +467,47 @@ func (c *Component) UnmarshalBinary(b []byte) error {
 
 	switch c.Type.Code() {
 	case Invoke:
-		/* TODO: Implement LinkedID Parser.
-		c.LinkedID, err = ParseIE(b[offset:])
-		if err != nil {
-			return err
-		}
-		offset += c.LinkedID.MarshalLen()
-		*/
+		// Parse Operation Code
 		c.OperationCode, err = ParseIE(b[offset:])
 		if err != nil {
 			return err
 		}
 		offset += c.OperationCode.MarshalLen()
 
-		if offset >= len(b) {
-			return nil
+		// Parse Parameter (The actual CAMEL data)
+		if offset < len(b) && offset < headerLen+length {
+			c.Parameter, err = ParseIERecursive(b[offset:])
+			if err != nil {
+				return err
+			}
 		}
-		c.Parameter, err = ParseIERecursive(b[offset:])
-		if err != nil {
-			return err
-		}
+
 	case ReturnResultLast, ReturnResultNotLast:
+		// Note: ReturnResult has an optional sequence wrapper (ResultRetres)
 		c.ResultRetres, err = ParseIE(b[offset:])
 		if err != nil {
 			return err
 		}
-		offset = 0
-		b = c.ResultRetres.Value[offset:]
 
-		c.OperationCode, err = ParseIE(b[offset:])
-		if err != nil {
-			return err
-		}
-		offset += c.OperationCode.MarshalLen()
+		// RESULT data is inside the Value of the IE we just parsed
+		innerBytes := c.ResultRetres.Value
+		innerOffset := 0
 
-		if offset >= len(b) {
-			return nil
+		if innerOffset < len(innerBytes) {
+			c.OperationCode, err = ParseIE(innerBytes[innerOffset:])
+			if err != nil {
+				return err
+			}
+			innerOffset += c.OperationCode.MarshalLen()
 		}
-		c.Parameter, err = ParseIERecursive(b[offset:])
-		if err != nil {
-			return err
+
+		if innerOffset < len(innerBytes) {
+			c.Parameter, err = ParseIERecursive(innerBytes[innerOffset:])
+			if err != nil {
+				return err
+			}
 		}
+
 	case ReturnError:
 		c.ErrorCode, err = ParseIE(b[offset:])
 		if err != nil {
@@ -447,13 +515,13 @@ func (c *Component) UnmarshalBinary(b []byte) error {
 		}
 		offset += c.ErrorCode.MarshalLen()
 
-		if offset >= len(b) {
-			return nil
+		if offset < len(b) && offset < headerLen+length {
+			c.Parameter, err = ParseIERecursive(b[offset:])
+			if err != nil {
+				return err
+			}
 		}
-		c.Parameter, err = ParseIERecursive(b[offset:])
-		if err != nil {
-			return err
-		}
+
 	case Reject:
 		c.ProblemCode, err = ParseIE(b[offset:])
 		if err != nil {
@@ -608,7 +676,7 @@ func (c *Components) SetLength() {
 	c.Length = 0
 	for _, comp := range c.Component {
 		comp.SetLength()
-		c.Length += uint8(comp.MarshalLen())
+		c.Length += (comp.MarshalLen())
 	}
 }
 
@@ -642,9 +710,9 @@ func (c *Component) SetLength() {
 		l += c.SequenceTag.MarshalLen()
 	}
 	if field := c.ResultRetres; field != nil {
-		field.Length = uint8(l)
+		field.Length = (l)
 	}
-	c.Length = uint8(c.MarshalLen() - 2)
+	c.Length = (c.MarshalLen() - 2)
 }
 
 // ComponentTypeString returns the Component Type in string.

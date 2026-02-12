@@ -95,7 +95,7 @@ const (
 // DialoguePDU represents a DialoguePDU field in Dialogue.
 type DialoguePDU struct {
 	Type                   Tag
-	Length                 uint8
+	Length                 int
 	ProtocolVersion        *IE
 	ApplicationContextName *IE
 	Result                 *IE
@@ -137,7 +137,7 @@ func NewDialoguePDU(dtype, pver int, ctx, ctxver, result uint8, diagsrc int, dia
 func NewApplicationContextName(ctx, ver uint8) *IE {
 	return &IE{
 		Tag:    NewContextSpecificConstructorTag(1),
-		Length: uint8(9),
+		Length: 9,
 		Value:  []byte{0x06, 0x07, 4, 0, 0, 1, 0, ctx, ver},
 	}
 }
@@ -273,22 +273,32 @@ func (d *DialoguePDU) MarshalBinary() ([]byte, error) {
 	return b, nil
 }
 
-// MarshalTo puts the byte sequence in the byte array given as b.
 func (d *DialoguePDU) MarshalTo(b []byte) error {
 	if len(b) < 2 {
 		return io.ErrUnexpectedEOF
 	}
 
+	// 1. Calculate dynamic length bytes
+	lenBytes := MarshalAsn1ElementLength(d.Length)
+
+	// 2. Ensure buffer can fit Tag (1) + Length Header
+	if len(b) < 1+len(lenBytes) {
+		return io.ErrShortBuffer
+	}
+
 	b[0] = uint8(d.Type)
-	b[1] = d.Length
+	copy(b[1:], lenBytes)
+
+	// 3. Offset where the actual PDU (AARQ/AARE/etc) starts
+	offset := 1 + len(lenBytes)
 
 	switch d.Type.Code() {
 	case AARQ:
-		return d.marshalAARQTo(b)
+		return d.marshalAARQTo(b[offset:])
 	case AARE:
-		return d.marshalAARETo(b)
+		return d.marshalAARETo(b[offset:])
 	case ABRT:
-		return d.marshalABRTTo(b)
+		return d.marshalABRTTo(b[offset:])
 	default:
 		return &InvalidCodeError{Code: d.Type.Code()}
 	}
@@ -385,22 +395,42 @@ func ParseDialoguePDU(b []byte) (*DialoguePDU, error) {
 	return d, nil
 }
 
-// UnmarshalBinary sets the values retrieved from byte sequence in an DialoguePDU.
 func (d *DialoguePDU) UnmarshalBinary(b []byte) error {
-	if len(b) < 4 {
+	if len(b) < 2 {
 		return io.ErrUnexpectedEOF
 	}
 
 	d.Type = Tag(b[0])
-	d.Length = b[1]
+
+	// 1. Use your util to get the actual value length
+	length, err := UnmarshalAsn1ElementLength(b)
+	if err != nil {
+		return err
+	}
+	d.Length = length
+
+	// 2. Calculate header length to find the data offset
+	// If b[1] > 0x7f, it's 2 + number of octets. Otherwise, it's 2.
+	headerLen := 2
+	if b[1] > 0x7f {
+		headerLen = 2 + int(b[1]&0x7f)
+	}
+
+	// 3. Bound check the full message
+	if len(b) < headerLen+length {
+		return io.ErrUnexpectedEOF
+	}
+
+	// 4. Extract the payload and parse
+	payload := b[headerLen : headerLen+length]
 
 	switch d.Type.Code() {
 	case AARQ:
-		return d.parseAARQFromBytes(b)
+		return d.parseAARQFromBytes(payload)
 	case AARE:
-		return d.parseAAREFromBytes(b)
+		return d.parseAAREFromBytes(payload)
 	case ABRT:
-		return d.parseABRTFromBytes(b)
+		return d.parseABRTFromBytes(payload)
 	default:
 		return &InvalidCodeError{Code: d.Type.Code()}
 	}
@@ -559,7 +589,7 @@ func (d *DialoguePDU) SetLength() {
 	if field := d.UserInformation; field != nil {
 		field.SetLength()
 	}
-	d.Length = uint8(d.MarshalLen() - 2)
+	d.Length = (d.MarshalLen() - 2)
 }
 
 // DialogueType returns the name of Dialogue Type in string.

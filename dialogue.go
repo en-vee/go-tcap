@@ -18,9 +18,9 @@ const (
 // Dialogue represents a Dialogue Portion of TCAP.
 type Dialogue struct {
 	Tag              Tag
-	Length           uint8
+	Length           int
 	ExternalTag      Tag
-	ExternalLength   uint8
+	ExternalLength   int
 	ObjectIdentifier *IE
 	SingleAsn1Type   *IE
 	DialoguePDU      *DialoguePDU
@@ -39,7 +39,7 @@ func NewDialogue(oid, ver uint8, pdu *DialoguePDU, payload []byte) *Dialogue {
 		},
 		SingleAsn1Type: &IE{
 			Tag:    NewContextSpecificConstructorTag(0),
-			Length: uint8(pdu.MarshalLen()),
+			Length: pdu.MarshalLen(),
 		},
 		DialoguePDU: pdu,
 		Payload:     payload,
@@ -58,43 +58,67 @@ func (d *Dialogue) MarshalBinary() ([]byte, error) {
 	return b, nil
 }
 
-// MarshalTo puts the byte sequence in the byte array given as b.
 func (d *Dialogue) MarshalTo(b []byte) error {
-	if len(b) < 4 {
-		return io.ErrUnexpectedEOF
+	// 1. Prepare Length Headers
+	dialLenBytes := MarshalAsn1ElementLength(d.Length)
+	extLenBytes := MarshalAsn1ElementLength(int(d.ExternalLength))
+
+	// 2. Minimum check: Tag(1) + DialLen + ExtTag(1) + ExtLen
+	minHeaderSize := 1 + len(dialLenBytes) + 1 + len(extLenBytes)
+	if len(b) < minHeaderSize {
+		return io.ErrShortBuffer
 	}
+
+	// 3. Encode Dialogue Tag and Length
 	b[0] = uint8(d.Tag)
-	b[1] = d.Length
-	b[2] = uint8(d.ExternalTag)
-	b[3] = d.ExternalLength
+	copy(b[1:], dialLenBytes)
+	offset := 1 + len(dialLenBytes)
 
-	var offset = 4
+	// 4. Encode External Tag and Length
+	b[offset] = uint8(d.ExternalTag)
+	copy(b[offset+1:], extLenBytes)
+	offset += 1 + len(extLenBytes)
+
+	// 5. Marshal OID (Object Identifier)
 	if field := d.ObjectIdentifier; field != nil {
-		if err := field.MarshalTo(b[offset : offset+field.MarshalLen()]); err != nil {
+		fieldSize := field.MarshalLen()
+		if len(b) < offset+fieldSize {
+			return io.ErrShortBuffer
+		}
+		if err := field.MarshalTo(b[offset : offset+fieldSize]); err != nil {
 			return err
 		}
-		offset += field.MarshalLen()
+		offset += fieldSize
 	}
 
-	if d.SingleAsn1Type == nil {
+	// 6. Handle SingleAsn1Type / DialoguePDU
+	if d.SingleAsn1Type != nil {
+		if field := d.DialoguePDU; field != nil {
+			// Marshalling nested PDU into the Value of the IE
+			d.SingleAsn1Type.Value = make([]byte, field.MarshalLen())
+			if err := field.MarshalTo(d.SingleAsn1Type.Value); err != nil {
+				return err
+			}
+			d.SingleAsn1Type.SetLength() // Update internal length based on new value
+		}
+
+		fieldSize := d.SingleAsn1Type.MarshalLen()
+		if len(b) < offset+fieldSize {
+			return io.ErrShortBuffer
+		}
+		if err := d.SingleAsn1Type.MarshalTo(b[offset : offset+fieldSize]); err != nil {
+			return err
+		}
+		offset += fieldSize
+	}
+
+	// 7. Append trailing Payload if any
+	if len(d.Payload) > 0 {
+		if len(b) < offset+len(d.Payload) {
+			return io.ErrShortBuffer
+		}
 		copy(b[offset:], d.Payload)
-		return nil
 	}
-
-	if field := d.DialoguePDU; field != nil {
-		d.SingleAsn1Type.Value = make([]byte, field.MarshalLen())
-		if err := field.MarshalTo(d.SingleAsn1Type.Value); err != nil {
-			return err
-		}
-	}
-
-	d.SingleAsn1Type.SetLength()
-	if err := d.SingleAsn1Type.MarshalTo(b[offset : offset+d.SingleAsn1Type.MarshalLen()]); err != nil {
-		return err
-	}
-	offset += d.SingleAsn1Type.MarshalLen()
-
-	copy(b[offset:], d.Payload)
 
 	return nil
 }
@@ -116,11 +140,14 @@ func (d *Dialogue) UnmarshalBinary(b []byte) error {
 	}
 
 	d.Tag = Tag(b[0])
-	d.Length = b[1]
-	d.ExternalTag = Tag(b[2])
-	d.ExternalLength = b[3]
-
 	var err error
+
+	if d.Length, err = UnmarshalAsn1ElementLength(b); err != nil {
+		return err
+	}
+	d.ExternalTag = Tag(b[2])
+	d.ExternalLength = int(b[3])
+
 	var offset = 4
 	d.ObjectIdentifier, err = ParseIE(b[offset:])
 	if err != nil {
@@ -209,8 +236,8 @@ func (d *Dialogue) SetLength() {
 		d.DialoguePDU.SetLength()
 	}
 
-	d.Length = uint8(d.MarshalLen() - 2)
-	d.ExternalLength = uint8(d.MarshalLen() - 4)
+	d.Length = (d.MarshalLen() - 2)
+	d.ExternalLength = (d.MarshalLen() - 4)
 }
 
 // String returns the SCCP common header values in human readable format.

@@ -89,7 +89,7 @@ func (t Tag) Code() int {
 // IE is a General Structure of TCAP Information Elements.
 type IE struct {
 	Tag
-	Length uint8
+	Length int
 	Value  []byte
 	IE     []*IE
 }
@@ -120,8 +120,20 @@ func (i *IE) MarshalTo(b []byte) error {
 		return io.ErrUnexpectedEOF
 	}
 
+	// 1. Calculate the length header bytes (e.g., [0x32] or [0x81, 0xB1])
+	lenBytes := MarshalAsn1ElementLength(i.Length)
+
+	// 2. Ensure the provided buffer can fit Tag (1) + Length Header + Value
+	totalNeeded := 1 + len(lenBytes) + len(i.Value)
+	if len(b) < totalNeeded {
+		return io.ErrShortBuffer
+	}
+
+	// 3. Set the Tag
 	b[0] = uint8(i.Tag)
-	b[1] = i.Length
+
+	// 4. Copy the Length Header starting at index 1
+	copy(b[1:], lenBytes)
 	copy(b[2:i.MarshalLen()], i.Value)
 	return nil
 }
@@ -161,8 +173,11 @@ func (i *IE) UnmarshalBinary(b []byte) error {
 		return io.ErrUnexpectedEOF
 	}
 
+	var err error
 	i.Tag = Tag(b[0])
-	i.Length = b[1]
+	if i.Length, err = UnmarshalAsn1ElementLength(b); err != nil {
+		return err
+	}
 	if l < 2+int(i.Length) {
 		return io.ErrUnexpectedEOF
 	}
@@ -224,9 +239,11 @@ func (i *IE) ParseRecursive(b []byte) error {
 	if l < 2 {
 		return io.ErrUnexpectedEOF
 	}
-
+	var err error
 	i.Tag = Tag(b[0])
-	i.Length = b[1]
+	if i.Length, err = UnmarshalAsn1ElementLength(b); err != nil {
+		return err
+	}
 	if int(i.Length)+2 > len(b) {
 		return nil
 	}
@@ -244,13 +261,15 @@ func (i *IE) ParseRecursive(b []byte) error {
 }
 
 // MarshalLen returns the serial length of IE.
-func (i *IE) MarshalLen() int {
-	return 2 + len(i.Value)
+func (ie *IE) MarshalLen() int {
+	// 1 (Tag) + Length of Length Header + the value (c.Length)
+	lHeader := len(MarshalAsn1ElementLength(ie.Length))
+	return 1 + lHeader + ie.Length
 }
 
 // SetLength sets the length in Length field.
 func (i *IE) SetLength() {
-	i.Length = uint8(len(i.Value))
+	i.Length = len(i.Value)
 }
 
 // String returns IE in human readable string.

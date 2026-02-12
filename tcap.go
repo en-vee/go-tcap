@@ -226,10 +226,10 @@ func (t *TCAP) SetLength() {
 	if portion := t.Transaction; portion != nil {
 		portion.SetLength()
 		if c := t.Components; c != nil {
-			portion.Length += uint8(c.MarshalLen())
+			portion.Length += c.MarshalLen()
 		}
 		if d := t.Dialogue; d != nil {
-			portion.Length += uint8(d.MarshalLen())
+			portion.Length += (d.MarshalLen())
 		}
 	}
 }
